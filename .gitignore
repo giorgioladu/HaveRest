@@ -1,0 +1,19 @@
+# Binario compilato
+haverest
+haverest.exe
+ 
+# Config con credenziali (MAI committare!)
+config.json
+ 
+# Directory repository (dati utenti)
+repos/
+ 
+# Strumenti temporanei
+hashpw.go
+/tmp/
+ 
+# Go
+*.test
+*.out
+vendor/
+ 
