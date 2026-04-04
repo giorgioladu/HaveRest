@@ -1,0 +1,17 @@
+{
+  "repo_dir":            "/var/lib/restic-repos",
+  "append_only":         true,
+  "global_max_parallel": 4,
+  "metrics_user":        "prometheus",
+  "metrics_pass":        "cambia-questa-password",
+  "users": {
+    "utente1": {
+      "hash":    "$2a$10$HASH_GENERATO_DA_hashpw.go_VAI_NELLE_ISTRUZIONI",
+      "max_mbps": 50
+    },
+    "utente2": {
+      "hash":    "$2a$10$HASH_GENERATO_DA_hashpw.go_VAI_NELLE_ISTRUZIONI",
+      "max_mbps": 0
+    }
+  }
+}
