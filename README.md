@@ -45,7 +45,7 @@ e monitorabile — da girare in un container Podman dietro Nginx Proxy Manager.
 ### Build
 
 ```bash
-git clone https://github.com/TUO_USERNAME/haverest.git
+git clone https://github.com/giorgioladu/haverest.git
 cd haverest
 go mod tidy
 go build -o haverest .
@@ -224,10 +224,10 @@ lato server: autenticazione, rate limiting e osservabilità.
 
 ## Licenza
 
-MIT — fai quello che vuoi, ma un ⭐ fa sempre piacere. 😄
+GPL 2 — fai quello che vuoi, ma un ⭐ fa sempre piacere. 😄
 
 ---
 
 ## Autore
 
-Giorgio — Fedora Linux, Podman, restic, e caffè ☕
+Giorgio 
