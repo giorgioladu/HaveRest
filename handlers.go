@@ -1,25 +1,8 @@
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- * MA 02110-1301, USA.
- * 
- */
- 
 package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -39,62 +22,73 @@ import (
 // quindi un client non vedrà mai un file parzialmente scritto.
 // Se il file esiste già, risponde 200 senza toccare nulla (immutabilità).
 func handleSave(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
-	path := getPath(cfg.RepoDir, user, chi.URLParam(r, "type"), chi.URLParam(r, "id"))
 
-	// Immutabilità: i pack file restic non vengono mai sovrascritti.
-	if _, err := os.Stat(path); err == nil {
-		w.WriteHeader(http.StatusOK)
+	bType := chi.URLParam(r, "type")
+	id := chi.URLParam(r, "id")
+
+	finalPath := getPath(cfg.RepoDir, user, bType, id)
+	tmpPath := finalPath + ".tmp"
+
+	// crea directory se non esiste
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
+		log.Printf("ERROR save MkdirAll %s: %v", finalPath, err)
+		http.Error(w, "Errore directory", http.StatusInternalServerError)
 		return
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("ERROR save MkdirAll %s: %v", dir, err)
-		http.Error(w, "Errore creazione directory", http.StatusInternalServerError)
-		return
-	}
-
-	tmp, err := os.CreateTemp(dir, "up-*")
+	// file temporaneo (atomic write)
+	f, err := os.Create(tmpPath)
 	if err != nil {
-		log.Printf("ERROR save CreateTemp %s: %v", dir, err)
-		http.Error(w, "Errore file temporaneo", http.StatusInternalServerError)
+		log.Printf("ERROR save Create %s: %v", tmpPath, err)
+		http.Error(w, "Errore creazione file", http.StatusInternalServerError)
 		return
 	}
-	tmpName := tmp.Name()
-	// Remove è no-op se il Rename ha avuto successo — sicuro chiamarlo sempre.
-	defer os.Remove(tmpName)
+	defer func() {
+		f.Close()
+		os.Remove(tmpPath) // cleanup se qualcosa va male
+	}()
 
-	body := throttle(r.Body, user, cfg, r.Context())
+	// throttle sul WRITER
+	dst := throttleWriter(f, user, cfg, r.Context())
 
 	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf)
 
-	n, err := io.CopyBuffer(tmp, body, buf)
+	n, err := io.CopyBuffer(dst, r.Body, buf)
 	if err != nil {
-		tmp.Close()
-		log.Printf("ERROR save CopyBuffer %s: %v", path, err)
+		log.Printf("ERROR save CopyBuffer %s: %v", finalPath, err)
 		http.Error(w, "Errore scrittura", http.StatusInternalServerError)
 		return
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		log.Printf("ERROR save Sync %s: %v", tmpName, err)
+
+	// flush su disco (importante)
+	if err := f.Sync(); err != nil {
+		log.Printf("ERROR save Sync %s: %v", finalPath, err)
 		http.Error(w, "Errore sync", http.StatusInternalServerError)
 		return
 	}
-	tmp.Close()
 
-	if err := os.Rename(tmpName, path); err != nil {
-		log.Printf("ERROR save Rename %s -> %s: %v", tmpName, path, err)
-		http.Error(w, "Errore salvataggio finale", http.StatusInternalServerError)
+	if err := f.Close(); err != nil {
+		log.Printf("ERROR save Close %s: %v", finalPath, err)
+		http.Error(w, "Errore close", http.StatusInternalServerError)
 		return
 	}
 
+	// rename atomico → evita file corrotti
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		log.Printf("ERROR save Rename %s: %v", finalPath, err)
+		http.Error(w, "Errore rename", http.StatusInternalServerError)
+		return
+	}
+
+	// risposta restic-friendly
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusOK)
+
 	bytesTransferred.WithLabelValues(user, "up").Add(float64(n))
 	opsProcessed.WithLabelValues(user, "save").Inc()
-	w.WriteHeader(http.StatusCreated)
 }
 
 // ---------------------------------------------------------------------------
@@ -104,13 +98,14 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 // handleLoad invia un oggetto restic al client.
 // Applica il throttling anche sul download, simmetrico all'upload.
 func handleLoad(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
 	path := getPath(cfg.RepoDir, user, chi.URLParam(r, "type"), chi.URLParam(r, "id"))
 
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			w.Header().Set("Content-Length", "0")
 			http.Error(w, "Not found", http.StatusNotFound)
 		} else {
 			log.Printf("ERROR load Open %s: %v", path, err)
@@ -120,6 +115,16 @@ func handleLoad(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		log.Printf("ERROR load Stat %s: %v", path, err)
+		http.Error(w, "Errore stat file", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	w.WriteHeader(http.StatusOK)
+
 	src := throttle(f, user, cfg, r.Context())
 
 	buf := bufferPool.Get().([]byte)
@@ -127,7 +132,6 @@ func handleLoad(w http.ResponseWriter, r *http.Request) {
 
 	n, err := io.CopyBuffer(w, src, buf)
 	if err != nil {
-		// Spesso è il client che chiude la connessione — WARN, non ERROR.
 		log.Printf("WARN load CopyBuffer %s: %v", path, err)
 		return
 	}
@@ -145,15 +149,17 @@ func handleLoad(w http.ResponseWriter, r *http.Request) {
 // perché evita la ricorsione — scende manualmente solo di un livello
 // nelle sottodirectory a 2 caratteri usate da restic.
 func handleList(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
 	prefix := filepath.Join(cfg.RepoDir, user, chi.URLParam(r, "type"))
 
 	entries, err := os.ReadDir(prefix)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Directory non ancora creata: lista vuota è la risposta corretta.
+			// lista vuota ma con Content-Length corretto
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "2")
+			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("[]"))
 			return
 		}
@@ -163,9 +169,9 @@ func handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var ids []string
+
 	for _, e := range entries {
 		if e.IsDir() {
-			// Sottodirectory tipo "ab/" — scendi di un livello.
 			subDir := filepath.Join(prefix, e.Name())
 			subEntries, err := os.ReadDir(subDir)
 			if err != nil {
@@ -182,10 +188,18 @@ func handleList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(ids); err != nil {
-		log.Printf("ERROR list Encode: %v", err)
+	data, err := json.Marshal(ids)
+	if err != nil {
+		log.Printf("ERROR list Marshal: %v", err)
+		http.Error(w, "Errore encoding", http.StatusInternalServerError)
+		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+
 	opsProcessed.WithLabelValues(user, "list").Inc()
 }
 
@@ -203,7 +217,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Append-only mode attivo", http.StatusForbidden)
 		return
 	}
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	path := getPath(cfg.RepoDir, user, chi.URLParam(r, "type"), chi.URLParam(r, "id"))
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -213,7 +227,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opsProcessed.WithLabelValues(user, "delete").Inc()
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusOK)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,14 +237,18 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 // handleHead verifica l'esistenza di un oggetto senza trasferirne il contenuto.
 // Restic lo usa per il controllo di deduplicazione prima di caricare un pack file.
 func handleHead(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
 	path := getPath(cfg.RepoDir, user, chi.URLParam(r, "type"), chi.URLParam(r, "id"))
 
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
+		w.Header().Set("Content-Length", "0")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -241,7 +259,7 @@ func handleHead(w http.ResponseWriter, r *http.Request) {
 // handleConfigLoad invia la config cifrata del repository restic.
 // È distinta dagli altri oggetti perché non ha un id nel path.
 func handleConfigLoad(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
 	path := getPath(cfg.RepoDir, user, "config", "")
 
@@ -258,7 +276,7 @@ func handleConfigLoad(w http.ResponseWriter, r *http.Request) {
 // handleConfigSave salva la config cifrata del repository restic.
 // Viene chiamata una sola volta da "restic init" e mai più sovrascritta.
 func handleConfigSave(w http.ResponseWriter, r *http.Request) {
-	user, _, _ := r.BasicAuth()
+	user := chi.URLParam(r, "user")
 	cfg := getConfig()
 	path := getPath(cfg.RepoDir, user, "config", "")
 
@@ -294,4 +312,40 @@ func handleConfigSave(w http.ResponseWriter, r *http.Request) {
 
 	opsProcessed.WithLabelValues(user, "save_config").Inc()
 	w.WriteHeader(http.StatusCreated)
+}
+
+
+// handleCreateRepo gestisce la creazione della directory del repository.
+// Restic chiama POST /?create=true durante l'init.
+func handleCreateRepo(w http.ResponseWriter, r *http.Request) {
+	user := chi.URLParam(r, "user")
+	cfg := getConfig()
+	path := filepath.Join(cfg.RepoDir, user)
+
+	// Crea la cartella dell'utente se non esiste
+	if err := os.MkdirAll(path, 0755); err != nil {
+		log.Printf("ERROR create repo %s: %v", path, err)
+		http.Error(w, "Errore creazione repository", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("INFO Repository creato per l'utente: %s", user)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleConfigHead verifica se la config del repository esiste.
+// Restic lo chiama prima di init per sapere se il repo è già inizializzato.
+func handleConfigHead(w http.ResponseWriter, r *http.Request) {
+    user := chi.URLParam(r, "user")
+    cfg := getConfig()
+    path := getPath(cfg.RepoDir, user, "config", "")
+
+    info, err := os.Stat(path)
+    if err != nil {
+        w.Header().Set("Content-Length", "0") 
+        w.WriteHeader(http.StatusNotFound)     
+        return
+    }
+    w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size())) 
+    w.WriteHeader(http.StatusOK)                                      
 }

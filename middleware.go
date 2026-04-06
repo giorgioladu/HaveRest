@@ -1,21 +1,3 @@
-/*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- * MA 02110-1301, USA.
- * 
- */
- 
 package main
 
 import (
@@ -32,8 +14,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // AuthMiddleware verifica le credenziali Basic Auth contro la config corrente.
-// Usa sempre getConfig() per leggere la config in modo thread-safe,
-// così un reload via SIGHUP viene recepito immediatamente.
+// Controlla inoltre che l'utente autenticato corrisponda al {user} nel path,
+// impedendo a un utente di accedere ai repository di un altro.
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
@@ -42,6 +24,12 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		if !ok || !exists || bcrypt.CompareHashAndPassword([]byte(entry.Hash), []byte(pass)) != nil {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Restic"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// L'utente autenticato deve corrispondere al {user} nel path URL.
+		// Evita che giorgio possa accedere a /mario/data/...
+		if pathUser := chi.URLParam(r, "user"); pathUser != "" && pathUser != user {
+			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

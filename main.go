@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	VERSION = "1.0.0"
+	VERSION = "1.0.8"
 	AUTHOR  = "Giorgio"
-	YEAR    = "2025"
+	YEAR    = "2026"
 )
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ func printUsage(progname string) {
                 (default: config.json nella directory corrente)
 
    -p <porta>   Porta TCP su cui ascoltare
-                (default: 8000)
+                (default: 8080)
 
    -v           Mostra la versione ed esce
 
@@ -83,7 +83,7 @@ func printUsage(progname string) {
    SIGINT    Graceful shutdown (Ctrl+C)
 
  REPOSITORY RESTIC:
-   export RESTIC_REPOSITORY=rest:http://utente:password@localhost:8000
+   export RESTIC_REPOSITORY=rest:http://utente:password@localhost:8080
    export RESTIC_PASSWORD=passwordCifratura
    restic init
 
@@ -101,7 +101,7 @@ func main() {
 	flag.Usage = func() { printUsage(progname) }
 
 	flagConfig  := flag.String("f", "config.json", "")
-	flagPort    := flag.String("p", "8000", "")
+	flagPort    := flag.String("p", "8080", "")
 	flagVersion := flag.Bool("v", false, "")
 	flagHelp    := flag.Bool("h", false, "")
 
@@ -156,15 +156,20 @@ func main() {
 		r.Use(AuthMiddleware)
 		r.Use(LimitConcurrency)
 
-		r.Get("/config", handleConfigLoad)
-		r.Post("/config", handleConfigSave)
+		// Restic include il nome utente nel path: /{user}/config, /{user}/data/...
+		r.Route("/{user}", func(r chi.Router) {
+			r.Post("/", handleCreateRepo)
+			r.Head("/config", handleConfigHead)     
+			r.Get("/config", handleConfigLoad)
+			r.Post("/config", handleConfigSave)
 
-		r.Route("/data/{type}", func(r chi.Router) {
+			r.Route("/{type}", func(r chi.Router) {
 			r.Get("/", handleList)
 			r.Get("/{id}", handleLoad)
 			r.Post("/{id}", handleSave)
 			r.Delete("/{id}", handleDelete)
 			r.Head("/{id}", handleHead)
+			})
 		})
 	})
 
@@ -173,9 +178,10 @@ func main() {
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      r,
-		ReadTimeout:  60 * time.Second,
+		ReadTimeout:  15 * time.Minute,
 		WriteTimeout: 15 * time.Minute,
 		IdleTimeout:  120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// --- SIGHUP: reload config a caldo ---
@@ -192,7 +198,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		log.Printf("[*] Listen on %s \n", addr)
+		log.Printf("[*] In ascolto su %s — buon lavoro!\n", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("FATAL ListenAndServe: %v", err)
 		}
@@ -200,11 +206,11 @@ func main() {
 
 	<-quit
 	fmt.Println()
-	log.Println("[*] Shutdown (max 30s)...")
+	log.Println("[*] Shutdown in corso (max 30s)...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("[!] Error shutdown: %v", err)
+		log.Printf("[!] Errore shutdown: %v", err)
 	}
-	log.Println("[*] Server stopped.")
+	log.Println("[*] Server fermato. Arrivederci!")
 }

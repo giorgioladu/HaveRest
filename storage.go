@@ -32,9 +32,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // bufferPool riduce le allocazioni durante i trasferimenti di dati.
-// Ogni goroutine prende un buffer da 64KB, lo usa, e lo rimette nel pool.
+// Ogni goroutine prende un buffer da 128KB, lo usa, e lo rimette nel pool.
 var bufferPool = sync.Pool{
-	New: func() interface{} { return make([]byte, 64*1024) },
+	New: func() interface{} { return make([]byte, 128*1024) },
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ func getLimiter(user string, mbps int) *rate.Limiter {
 		return l
 	}
 	bytesPerSec := rate.Limit(mbps * 1024 * 1024 / 8)
-	l := rate.NewLimiter(bytesPerSec, 1024*1024) // burst: 1 MB
+	l := rate.NewLimiter(bytesPerSec, 1024*1024) // burst
 	limiters[user] = l
 	return l
 }
@@ -69,15 +69,44 @@ type ThrottledReader struct {
 }
 
 func (t *ThrottledReader) Read(p []byte) (int, error) {
-	n, err := t.r.Read(p)
-	if n > 0 {
-		if waitErr := t.l.WaitN(t.ctx, n); waitErr != nil {
-			return n, waitErr
-		}
+	// limita quanto possiamo leggere in questa chiamata
+	max := len(p)
+	if max > 32*1024 {
+		max = 32 * 1024 // chunk più piccoli = più controllo
 	}
-	return n, err
+
+	// aspetta PRIMA di leggere (fondamentale)
+	if waitErr := t.l.WaitN(t.ctx, max); waitErr != nil {
+		return 0, waitErr
+	}
+
+	return t.r.Read(p[:max])
 }
 
+type ThrottledWriter struct {
+	w   io.Writer
+	l   *rate.Limiter
+	ctx context.Context
+}
+
+func (t *ThrottledWriter) Write(p []byte) (int, error) {
+	if err := t.l.WaitN(t.ctx, len(p)); err != nil {
+		return 0, err
+	}
+	return t.w.Write(p)
+}
+
+func throttleWriter(w io.Writer, user string, cfg Config, ctx context.Context) io.Writer {
+	entry := cfg.Users[user]
+	if entry.MaxMbps <= 0 {
+		return w
+	}
+	return &ThrottledWriter{
+		w:   w,
+		l:   getLimiter(user, entry.MaxMbps),
+		ctx: ctx,
+	}
+}
 // throttle avvolge un reader con il ThrottledReader se l'utente ha un limite
 // configurato, altrimenti restituisce il reader originale invariato.
 func throttle(r io.Reader, user string, cfg Config, ctx context.Context) io.Reader {
