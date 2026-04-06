@@ -1,7 +1,7 @@
 {
   "repo_dir":            "/var/lib/restic-repos",
-  "append_only":         true,
-  "global_max_parallel": 4,
+  "append_only":         false,
+  "global_max_parallel": 2,
   "metrics_user":        "prometheus",
   "metrics_pass":        "cambia-questa-password",
   "users": {
