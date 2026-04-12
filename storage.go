@@ -32,9 +32,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // bufferPool riduce le allocazioni durante i trasferimenti di dati.
-// Ogni goroutine prende un buffer da 128KB, lo usa, e lo rimette nel pool.
+// Ogni goroutine prende un buffer da 256 KB, lo usa, e lo rimette nel pool.
 var bufferPool = sync.Pool{
-	New: func() interface{} { return make([]byte, 128*1024) },
+	New: func() interface{} { return make([]byte, 256*1024) },
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ func getLimiter(user string, mbps int) *rate.Limiter {
 		return l
 	}
 	bytesPerSec := rate.Limit(mbps * 1024 * 1024 / 8)
-	l := rate.NewLimiter(bytesPerSec, 1024*1024) // burst
+	l := rate.NewLimiter(bytesPerSec, 2048*1024) // burst
 	limiters[user] = l
 	return l
 }
@@ -96,7 +96,7 @@ func (t *ThrottledWriter) Write(p []byte) (int, error) {
 	return t.w.Write(p)
 }
 
-func throttleWriter(w io.Writer, user string, cfg Config, ctx context.Context) io.Writer {
+func throttleW(w io.Writer, user string, cfg Config, ctx context.Context) io.Writer {
 	entry := cfg.Users[user]
 	if entry.MaxMbps <= 0 {
 		return w
@@ -109,7 +109,7 @@ func throttleWriter(w io.Writer, user string, cfg Config, ctx context.Context) i
 }
 // throttle avvolge un reader con il ThrottledReader se l'utente ha un limite
 // configurato, altrimenti restituisce il reader originale invariato.
-func throttle(r io.Reader, user string, cfg Config, ctx context.Context) io.Reader {
+func throttleR(r io.Reader, user string, cfg Config, ctx context.Context) io.Reader {
 	entry := cfg.Users[user]
 	if entry.MaxMbps <= 0 {
 		return r

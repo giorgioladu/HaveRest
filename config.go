@@ -30,7 +30,8 @@
 				},
 				"server2": {
 					"hash": "$2a$10$X.................",
-					"max_mbps": 0 <= no limits!!
+					"max_mbps": 0 // 0 = no limits!!
+					"max_bytes": 0 // 0 = nessun limite
 				}
 			}
 		}
@@ -54,6 +55,7 @@ import (
 type UserEntry struct {
 	Hash    string `json:"hash"`
 	MaxMbps int    `json:"max_mbps"`
+	MaxBytes int64  `json:"max_bytes"` // 0 = nessun limite
 }
 
 type Config struct {
@@ -129,5 +131,6 @@ func reloadConfig(path string) {
 	configMu.Lock()
 	config = newCfg
 	configMu.Unlock()
+	initQuotas(newCfg) 
 	log.Printf("INFO Config ricaricata: %d utenti", len(newCfg.Users))
 }
