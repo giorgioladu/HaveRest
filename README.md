@@ -81,11 +81,19 @@ Crea un file `config.json`:
   "metrics_user":        "prometheus",
   "metrics_pass":        "passwordMetriche",
   "users": {
-    "utente1": { "hash": "$2a$10$...", "max_mbps": 50 },
-    "utente2": { "hash": "$2a$10$...", "max_mbps": 0  }
+    "utente1": { "hash": "$2a$10$...", "max_mbps": 50, "max_bytes": 10737418240 },
+    "utente2": { "hash": "$2a$10$...", "max_mbps": 0, "max_bytes": 0 }
   }
 }
 ```
+Valori utili per max_bytes nel config.json:
+Valore   Significato
+0        Nessun limite
+10737418240      10 GB
+53687091200         50 GB
+107374182400         100 GB
+1099511627776         1 TB
+
 
 | Campo | Descrizione |
 |---|---|
