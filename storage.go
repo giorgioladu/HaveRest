@@ -124,12 +124,16 @@ func throttleR(r io.Reader, user string, cfg Config, ctx context.Context) io.Rea
 // getPath costruisce il percorso su disco di un oggetto restic.
 // Restic organizza i pack file in sottodirectory a 2 caratteri (es. "ab/abcdef...")
 // per evitare directory con troppi file su filesystem lenti.
+
 func getPath(repoDir, user, bType, id string) string {
-	if bType == "config" {
-		return filepath.Join(repoDir, user, "config")
-	}
-	if len(id) > 2 {
-		return filepath.Join(repoDir, user, bType, id[:2], id)
-	}
-	return filepath.Join(repoDir, user, bType, id)
+    if bType == "config" {
+        return filepath.Join(repoDir, user, "config")
+    }
+    // Solo "data" usa sottodirectory a 2 caratteri per evitare
+    // directory con troppi file. Gli altri tipi (keys, snapshots,
+    // index, locks) sono sempre piatti.
+    if bType == "data" && len(id) > 2 {
+        return filepath.Join(repoDir, user, bType, id[:2], id)
+    }
+    return filepath.Join(repoDir, user, bType, id)
 }
